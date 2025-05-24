@@ -7,31 +7,83 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 
-	"github.com/LazarenkoA/Obfuscator-1C/obfuscator"
+	"github.com/vasdmi666/Obfuscator-1C/obfuscator"
 )
 
 func main() {
-
-	code := `...`
-
-	obf := obfuscator.NewObfuscatory(context.Background(), obfuscator.Config{RepExpByTernary: true,
-		RepLoopByGoto:    true,
-		RepExpByEval:     true,
-		HideString:       true,
+	// Инициализируем обфускатор с нужными настройками
+	obf := obfuscator.NewObfuscatory(context.Background(), obfuscator.Config{
+		RepExpByTernary: true,
+		RepLoopByGoto:   false,
+		RepExpByEval:    false,
+		HideString:      true,
 		ChangeConditions: true,
-		AppendGarbage:    true,
+		AppendGarbage:   true,
 	})
 
-	obCode, err := obf.Obfuscate(code)
+	// Открываем конфигурационный файл со списком модулей
+	configFile, err := os.Open("obfuscate.list")
 	if err != nil {
-		fmt.Println(err)
-		return
+		fmt.Printf("Ошибка открытия файла obfuscate.list: %v\n", err)
+		os.Exit(1)
+	}
+	defer configFile.Close()
+
+	// Сканируем файл построчно
+	scanner := bufio.NewScanner(configFile)
+	for scanner.Scan() {
+		moduleRelativePath := scanner.Text()
+		if moduleRelativePath == "" {
+			continue
+		}
+
+		moduleFullPath := filepath.Join("build", "src", moduleRelativePath)
+		fmt.Printf("Обфускация модуля: %s\n", moduleFullPath)
+
+		// Читаем исходный код модуля
+		codeBytes, err := os.ReadFile(moduleFullPath)
+		if err != nil {
+			fmt.Printf("  -> Ошибка чтения файла: %v\n", err)
+			continue
+		}
+
+		// Маркер BOM для UTF-8 - это байты EF BB BF
+		var utf8bom = []byte{0xEF, 0xBB, 0xBF}
+		// Удаляем BOM, если он есть в начале файла
+		codeBytes = bytes.TrimPrefix(codeBytes, utf8bom)
+
+		// Конвертируем в строку уже очищенные байты
+		code := string(codeBytes)
+
+		// Выполняем обфускацию
+		obfuscatedCode, err := obf.Obfuscate(code)
+		if err != nil {
+			fmt.Printf("  -> Ошибка обфускации: %v\n", err)
+			continue
+		}
+
+		// Перезаписываем файл модуля обфусцированным кодом
+		// Важно: записываем без BOM, чтобы не добавлять его снова
+		err = os.WriteFile(moduleFullPath, []byte(obfuscatedCode), 0644)
+		if err != nil {
+			fmt.Printf("  -> Ошибка записи файла: %v\n", err)
+			continue
+		}
+		
+		fmt.Println("  -> ✅ Успешно")
 	}
 
-	fmt.Println(obCode)
+	if err := scanner.Err(); err != nil {
+		fmt.Printf("Ошибка чтения конфигурационного файла: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 
