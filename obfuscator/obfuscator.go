@@ -446,84 +446,115 @@ func (c *Obfuscator) newDecodeStringFunc(directive string) string {
 	keyParam := c.randomString(10)
 	returnName := c.randomString(10)
 	funcName := c.randomString(30)
-	iteratorVar := c.randomString(1)
-	if iteratorVar == strParam || iteratorVar == keyParam || iteratorVar == returnName {
-		iteratorVar = c.randomString(2)
-	}
 
 	f := &ast.FunctionOrProcedure{
 		Type: ast.PFTypeFunction,
 		Name: funcName,
 		Body: []ast.Statement{
 			&ast.ExpStatement{
-				Operation: ast.OpEq,
-				Left:      ast.VarStatement{Name: "ДвоичныеДанные"},
-				Right: c.hideValue(ast.MethodStatement{
-					Name: "Base64Значение",
-					Param: []ast.Statement{
-						ast.VarStatement{Name: strParam},
-					},
-				}, 4),
-			},
-			&ast.ExpStatement{
-				Operation: ast.OpEq,
-				Left:      ast.VarStatement{Name: strParam},
-				Right: c.hideValue(ast.MethodStatement{
+				Operation: 4,
+				Left: ast.VarStatement{
+					Name: strParam,
+				},
+				Right: ast.MethodStatement{
 					Name: "ПолучитьСтрокуИзДвоичныхДанных",
 					Param: []ast.Statement{
-						ast.VarStatement{Name: "ДвоичныеДанные"},
+						c.hideValue(ast.MethodStatement{
+							Name: "Base64Значение",
+							Param: []ast.Statement{
+								ast.VarStatement{
+									Name: strParam,
+								},
+							},
+						}, 4),
 					},
-				}, 4),
+				},
 			},
 			&ast.ExpStatement{
 				Operation: ast.OpEq,
-				Left:      ast.VarStatement{Name: returnName},
-				Right:     c.hideValue("", 4),
+				Left: ast.VarStatement{
+					Name: returnName,
+				},
+				Right: c.hideValue("", 4),
 			},
 			&ast.LoopStatement{
-				For: &ast.ExpStatement{
-					Operation: ast.OpEq,
-					Left:      ast.VarStatement{Name: iteratorVar},
-					Right:     1.000000,
-				},
-				To: ast.MethodStatement{
-					Name: "СтрДлина",
-					Param: []ast.Statement{
-						ast.VarStatement{Name: strParam},
-					},
-				},
 				Body: []ast.Statement{
 					&ast.ExpStatement{
 						Operation: ast.OpEq,
-						Left:      ast.VarStatement{Name: "КодСимвола"},
+						Left: ast.VarStatement{
+							Name: "код",
+						},
 						Right: c.hideValue(ast.MethodStatement{
 							Name: "КодСимвола",
 							Param: []ast.Statement{
-								ast.VarStatement{Name: strParam},
-								ast.VarStatement{Name: iteratorVar},
+								ast.VarStatement{
+									Name: strParam,
+								},
+								ast.VarStatement{
+									Name: "_",
+								},
 							},
 						}, 4),
 					},
 					&ast.ExpStatement{
 						Operation: ast.OpEq,
-						Left:      ast.VarStatement{Name: returnName},
-						Right: &ast.ExpStatement{
+						Left: ast.VarStatement{
+							Name: returnName,
+						},
+						Right: c.hideValue(&ast.ExpStatement{
 							Operation: ast.OpPlus,
-							Left:      ast.VarStatement{Name: returnName},
+							Left: ast.VarStatement{
+								Name: returnName,
+							},
 							Right: ast.MethodStatement{
 								Name: "Символ",
 								Param: []ast.Statement{
-									ast.MethodStatement{
-										Name: "ПобитовоеИсключающееИЛИ",
+									c.hideValue(ast.MethodStatement{
+										Name: "ПобитовоеИли",
 										Param: []ast.Statement{
-											ast.VarStatement{Name: "КодСимвола"},
-											ast.VarStatement{Name: keyParam},
+											c.hideValue(ast.MethodStatement{
+												Name: "ПобитовоеИНе",
+												Param: []ast.Statement{
+													ast.VarStatement{
+														Name: "код",
+													},
+													ast.VarStatement{
+														Name: keyParam,
+													},
+												},
+											}, 4),
+											c.hideValue(ast.MethodStatement{
+												Name: "ПобитовоеИНе",
+												Param: []ast.Statement{
+													ast.VarStatement{
+														Name: keyParam,
+													},
+													c.hideValue(ast.VarStatement{
+														Name: "код",
+													}, 5),
+												},
+											}, 4),
 										},
-									},
+									}, 7),
 								},
 							},
+						}, 8),
+					},
+				},
+				To: ast.MethodStatement{
+					Name: "СтрДлина",
+					Param: []ast.Statement{
+						ast.VarStatement{
+							Name: strParam,
 						},
 					},
+				},
+				For: &ast.ExpStatement{
+					Operation: ast.OpEq,
+					Left: ast.VarStatement{
+						Name: "_",
+					},
+					Right: 1.000000,
 				},
 			},
 			&ast.ReturnStatement{
@@ -540,15 +571,11 @@ func (c *Obfuscator) newDecodeStringFunc(directive string) string {
 	}
 
 	c.appendGarbage(&f.Body)
-	if loop, ok := f.Body[3].(*ast.LoopStatement); ok {
-		c.appendGarbage(&loop.Body)
-	}
+	c.appendGarbage(&f.Body[2].(*ast.LoopStatement).Body)
 
-	if loop, ok := f.Body[3].(*ast.LoopStatement); ok {
-		c.replaceLoopToGoto(&f.Body, loop, true)
-	}
+	c.replaceLoopToGoto(&f.Body, f.Body[2].(*ast.LoopStatement), true)
 
-	c.generatedFuncs = append(c.generatedFuncs, f)
+	c.a.ModuleStatement.Body = append(c.a.ModuleStatement.Body, f)
 	return funcName
 }
 
