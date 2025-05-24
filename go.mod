@@ -1,4 +1,4 @@
-module github.com/LazarenkoA/Obfuscator-1C
+module github.com/vasdmi666/Obfuscator-1C
 
 go 1.22.4
 
