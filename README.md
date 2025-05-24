@@ -18,16 +18,6 @@ import (
 )
 
 func main() {
-	// Инициализируем обфускатор с нужными настройками
-	obf := obfuscator.NewObfuscatory(context.Background(), obfuscator.Config{
-		RepExpByTernary: true,
-		RepLoopByGoto:   false,
-		RepExpByEval:    false,
-		HideString:      true,
-		ChangeConditions: true,
-		AppendGarbage:   true,
-	})
-
 	// Открываем конфигурационный файл со списком модулей
 	configFile, err := os.Open("obfuscate.list")
 	if err != nil {
@@ -39,6 +29,18 @@ func main() {
 	// Сканируем файл построчно
 	scanner := bufio.NewScanner(configFile)
 	for scanner.Scan() {
+		
+		// Создаем новый экземпляр обфускатора ДЛЯ КАЖДОГО ФАЙЛА,
+		// чтобы избежать утечки состояния между итерациями.
+		obf := obfuscator.NewObfuscatory(context.Background(), obfuscator.Config{
+			RepExpByTernary: true,
+			RepLoopByGoto:   false,
+			RepExpByEval:    false,
+			HideString:      true,
+			ChangeConditions: true,
+			AppendGarbage:   true,
+		})
+
 		moduleRelativePath := scanner.Text()
 		if moduleRelativePath == "" {
 			continue
@@ -54,12 +56,9 @@ func main() {
 			continue
 		}
 
-		// Маркер BOM для UTF-8 - это байты EF BB BF
 		var utf8bom = []byte{0xEF, 0xBB, 0xBF}
-		// Удаляем BOM, если он есть в начале файла
 		codeBytes = bytes.TrimPrefix(codeBytes, utf8bom)
-
-		// Конвертируем в строку уже очищенные байты
+		
 		code := string(codeBytes)
 
 		// Выполняем обфускацию
@@ -70,7 +69,6 @@ func main() {
 		}
 
 		// Перезаписываем файл модуля обфусцированным кодом
-		// Важно: записываем без BOM, чтобы не добавлять его снова
 		err = os.WriteFile(moduleFullPath, []byte(obfuscatedCode), 0644)
 		if err != nil {
 			fmt.Printf("  -> Ошибка записи файла: %v\n", err)
