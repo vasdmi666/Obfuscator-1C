@@ -422,7 +422,15 @@ func (c *Obfuscator) fakeMethods() ast.MethodStatement {
 }
 
 func (c *Obfuscator) randomString(lenStr int) string {
+
 	charset := []rune("абвгдежзийклмнопрстуфхцчшщъыьэюяАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ")
+
+	// Проверка, чтобы избежать паники, если charset пуст
+	if len(charset) == 0 {
+		// Возвращаем пустую строку или строку-заглушку, чтобы избежать паники
+		return ""
+	}
+
 	builder := strings.Builder{}
 	builder.Grow(lenStr)
 	for i := 0; i < lenStr; i++ {
