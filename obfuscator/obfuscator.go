@@ -2,9 +2,10 @@ package obfuscator
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"strconv"
 	"strings"
 	"time"
@@ -14,20 +15,27 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Config содержит настройки обфускатора
 type Config struct {
 	// RepExpByTernary заменять выражение тернарными операторами
 	RepExpByTernary bool
+
 	// RepLoopByGoto заменять циклы на Перейти
 	RepLoopByGoto bool
+
 	// RepExpByEval прятать выражения в Выполнить() Вычислить()
 	RepExpByEval bool
+
 	// HideString прятать строки
 	HideString bool
+
 	// ChangeConditions изменять условия
 	ChangeConditions bool
+
 	// AppendGarbage добавлять мусора
 	AppendGarbage bool
+
+	// ShuffleExpressions изменять порядок выражений
+	// ShuffleExpressions bool
 }
 
 type Obfuscator struct {
@@ -37,30 +45,25 @@ type Obfuscator struct {
 	trueCondition        chan string
 	falseCondition       chan string
 	decodeStringFuncName map[string]string
-	generatedFuncs       []ast.Statement
-	r                    *rand.Rand
 }
 
-// NewObfuscatory создает новый экземпляр обфускатора
-func NewObfuscatory(ctx context.Context, conf Config) *Obfuscator {
-	source := rand.NewSource(time.Now().UnixNano())
-	randomizer := rand.New(source)
+func init() {
 
+}
+
+func NewObfuscatory(ctx context.Context, conf Config) *Obfuscator {
 	c := &Obfuscator{
 		ctx:                  ctx,
 		conf:                 conf,
 		trueCondition:        make(chan string, 10),
 		falseCondition:       make(chan string, 10),
 		decodeStringFuncName: make(map[string]string),
-		generatedFuncs:       make([]ast.Statement, 0),
-		r:                    randomizer,
 	}
 
 	c.genCondition()
 	return c
 }
 
-// Obfuscate выполняет обфускацию переданного кода
 func (c *Obfuscator) Obfuscate(code string) (string, error) {
 	c.a = ast.NewAST(code)
 	if err := c.a.Parse(); err != nil {
@@ -71,26 +74,22 @@ func (c *Obfuscator) Obfuscate(code string) (string, error) {
 		return code, nil
 	}
 
-	c.generatedFuncs = make([]ast.Statement, 0)
-
 	c.a.ModuleStatement.Walk(func(currentFP *ast.FunctionOrProcedure, statement *ast.Statement) {
 		c.walkStep(currentFP, nil, statement)
 	})
 
-	if len(c.generatedFuncs) > 0 {
-		c.a.ModuleStatement.Body = append(c.a.ModuleStatement.Body, c.generatedFuncs...)
-	}
-
 	result := c.a.Print(ast.PrintConf{OneLine: true, Margin: 1})
+	// result = strings.ToLower(result) // нельзя так делать, все поломает
 	return result, nil
 }
 
 func (c *Obfuscator) walkStep(currentFP *ast.FunctionOrProcedure, parent, item *ast.Statement) {
 	if currentFP == nil {
+		fmt.Println("! you can obfuscate a procedure or function")
 		return
 	}
 
-	key := float64(c.random(10, 100))
+	key := float64(random(10, 100))
 
 	switch v := (*item).(type) {
 	case *ast.IfStatement:
@@ -98,13 +97,30 @@ func (c *Obfuscator) walkStep(currentFP *ast.FunctionOrProcedure, parent, item *
 
 		v.Expression = c.appendConditions(v.Expression)
 		if c.conf.ChangeConditions {
-			c.appendIfElseBlock(&v.IfElseBlock, int(c.random(0, 5)))
+			c.appendIfElseBlock(&v.IfElseBlock, int(random(0, 5)))
 			c.appendGarbage(&v.ElseBlock)
 			c.appendGarbage(&v.TrueBlock)
 		}
 
+		// v.TrueBlock = c.shuffleExpressions(v.TrueBlock)
+		// v.ElseBlock = c.shuffleExpressions(v.ElseBlock)
 	case *ast.FunctionOrProcedure:
+
+		// Создаем новый (пустой) слайс для тела функции
+		newBody := make([]ast.Statement, 0, len(v.Body))
+		// Итерируемся по всем инструкциям в теле функции
+		for _, stmt := range v.Body {
+			// Применяем нашу новую трансформацию к каждой инструкции
+			// Она вернет либо одну инструкцию (если ничего не изменилось), либо несколько
+			transformedStmts := c.introduceTempVarsForStatement(stmt)
+			newBody = append(newBody, transformedStmts...)
+		}
+		// Заменяем старое тело функции на новое, с временными переменными
+		v.Body = newBody
+
+		// Теперь остальные обфускации будут работать с уже измененным, "плоским" кодом
 		c.appendGarbage(&v.Body)
+		// v.Body = c.shuffleExpressions(v.Body) // Эта часть у вас закомментирована, оставляем так
 
 	case ast.MethodStatement:
 		for i, param := range v.Param {
@@ -112,18 +128,16 @@ func (c *Obfuscator) walkStep(currentFP *ast.FunctionOrProcedure, parent, item *
 			case *ast.ExpStatement, ast.MethodStatement:
 				c.walkStep(currentFP, item, &casted)
 			case string:
-				if c.conf.HideString {
-					v.Param[i] = ast.MethodStatement{
-						Name:  c.decodeStringFunc(currentFP.Directive),
-						Param: []ast.Statement{c.obfuscateString(casted, int32(key)), c.hideValue(key, 4)},
-					}
+				v.Param[i] = ast.MethodStatement{
+					Name:  c.decodeStringFunc(currentFP.Directive),
+					Param: []ast.Statement{c.obfuscateString(casted, int32(key)), c.hideValue(key, 4)},
 				}
 			}
 		}
 
-		if c.conf.RepExpByEval && parent == nil && c.random(0, 2) == 1 {
+		if c.conf.RepExpByEval && parent == nil && random(0, 2) == 1 {
 			str := c.a.PrintStatementWithConf(v, ast.PrintConf{})
-			if len(str) > 0 && str[len(str)-1] == ';' {
+			if str[len(str)-1] == ';' {
 				str = str[:len(str)-1]
 			}
 
@@ -152,7 +166,7 @@ func (c *Obfuscator) walkStep(currentFP *ast.FunctionOrProcedure, parent, item *
 			switch v.Right.(type) {
 			case ast.MethodStatement, ast.CallChainStatement, ast.NewObjectStatement:
 				str := c.a.PrintStatementWithConf(v.Right, ast.PrintConf{})
-				if len(str) > 0 && str[len(str)-1] == ';' {
+				if str[len(str)-1] == ';' {
 					str = str[:len(str)-1]
 				}
 
@@ -170,9 +184,9 @@ func (c *Obfuscator) walkStep(currentFP *ast.FunctionOrProcedure, parent, item *
 	case ast.CallChainStatement:
 		c.walkStep(currentFP, item, &v.Unit)
 
-		if c.conf.RepExpByEval && parent == nil && c.random(0, 2) == 1 {
+		if c.conf.RepExpByEval && parent == nil && random(0, 2) == 1 {
 			str := c.a.PrintStatementWithConf(v, ast.PrintConf{})
-			if len(str) > 0 && str[len(str)-1] == ';' {
+			if str[len(str)-1] == ';' {
 				str = str[:len(str)-1]
 			}
 
@@ -197,7 +211,7 @@ func (c *Obfuscator) walkStep(currentFP *ast.FunctionOrProcedure, parent, item *
 }
 
 func (c *Obfuscator) obfuscateExpStatement(currentPF *ast.FunctionOrProcedure, part *interface{}) {
-	key := float64(c.random(10, 100))
+	key := float64(random(10, 100))
 
 	switch r := (*part).(type) {
 	case *ast.ExpStatement:
@@ -237,17 +251,18 @@ func (c *Obfuscator) obfuscateExpStatement(currentPF *ast.FunctionOrProcedure, p
 func (c *Obfuscator) decodeStringFunc(directive string) string {
 	if name, ok := c.decodeStringFuncName[directive]; ok {
 		return name
-	}
+	} else {
+		name := c.newDecodeStringFunc(directive)
+		c.decodeStringFuncName[directive] = name
 
-	name := c.newDecodeStringFunc(directive)
-	c.decodeStringFuncName[directive] = name
-	return name
+		return name
+	}
 }
 
 func (c *Obfuscator) hideValue(val interface{}, complexity int) ast.Statement {
 	switch val.(type) {
 	case string, bool, float64, int, time.Time, *ast.ExpStatement, ast.MethodStatement:
-		return c.newTernary(val, int(c.random(2, int64(complexity))), int(c.random(0, int64(complexity-1))))
+		return c.newTernary(val, int(random(2, complexity)), int(random(0, complexity-1)))
 	default:
 		return val
 	}
@@ -258,57 +273,50 @@ func (c *Obfuscator) appendGarbage(body *[]ast.Statement) {
 		return
 	}
 
-	if c.random(0, 2) == 1 {
+	if random(0, 2) == 1 {
 		*body = append(*body, &ast.ExpStatement{
 			Operation: ast.OpEq,
 			Left:      ast.VarStatement{Name: c.randomString(20)},
 			Right:     c.hideValue(c.randomString(5), 4),
 		})
 	}
-	if c.random(0, 2) == 1 {
+	if random(0, 2) == 1 {
 		*body = append(*body, &ast.ExpStatement{
 			Operation: ast.OpEq,
 			Left:      ast.VarStatement{Name: c.randomString(10)},
-			Right:     c.hideValue(float64(c.random(-100, 100)), 5),
+			Right:     c.hideValue(float64(random(-100, 100)), 5),
 		})
 	}
-	if c.random(0, 2) == 1 {
-		exp, err := c.convStrExpToExpStatement(<-c.falseCondition)
-		if err != nil {
-			return
-		}
-		IF := &ast.IfStatement{Expression: exp}
+	if random(0, 2) == 1 {
+		IF := &ast.IfStatement{Expression: c.convStrExpToExpStatement(<-c.falseCondition)}
 
-		if c.random(0, 2) == 1 {
-			c.appendIfElseBlock(&IF.IfElseBlock, int(c.random(0, 5)))
+		if random(0, 2) == 1 {
+			c.appendIfElseBlock(&IF.IfElseBlock, int(random(0, 5)))
 		}
-		if c.random(0, 2) == 1 {
+		if random(0, 2) == 1 {
 			c.appendGarbage(&IF.ElseBlock)
 			c.appendGarbage(&IF.TrueBlock)
 		}
+
+		IF.TrueBlock = c.shuffleExpressions(IF.TrueBlock)
+		IF.ElseBlock = c.shuffleExpressions(IF.ElseBlock)
 		*body = append(*body, IF)
 	}
-	if c.random(0, 2) == 1 {
-		exp, err := c.convStrExpToExpStatement(<-c.falseCondition)
-		if err != nil {
-			return
-		}
-		loop := &ast.LoopStatement{WhileExpr: exp}
-		if c.random(0, 2) == 1 {
+	if random(0, 2) == 1 {
+		loop := &ast.LoopStatement{WhileExpr: c.convStrExpToExpStatement(<-c.falseCondition)}
+		if random(0, 2) == 1 {
 			c.appendGarbage(&loop.Body)
 		}
+
+		loop.Body = c.shuffleExpressions(loop.Body)
 		*body = append(*body, loop)
 	}
 }
 
 func (c *Obfuscator) appendIfElseBlock(ifElseBlock *[]ast.Statement, count int) {
 	for i := 0; i < count; i++ {
-		exp, err := c.convStrExpToExpStatement(<-c.falseCondition)
-		if err != nil {
-			continue
-		}
 		*ifElseBlock = append(*ifElseBlock, &ast.IfStatement{
-			Expression: exp,
+			Expression: c.convStrExpToExpStatement(<-c.falseCondition),
 		})
 	}
 }
@@ -317,7 +325,8 @@ func (c *Obfuscator) appendConditions(exp ast.Statement) ast.Statement {
 	if !c.conf.ChangeConditions {
 		return exp
 	}
-	return c.helperAppendConditions(exp, 2)
+
+	return c.helperAppendConditions(exp, 3)
 }
 
 func (c *Obfuscator) helperAppendConditions(exp ast.Statement, depth int) ast.Statement {
@@ -325,50 +334,65 @@ func (c *Obfuscator) helperAppendConditions(exp ast.Statement, depth int) ast.St
 		return exp
 	}
 
-	trueCondExp, err := c.convStrExpToExpStatement(<-c.trueCondition)
-	if err != nil {
-		return exp
-	}
-
 	newConditions := &ast.ExpStatement{
 		Operation: ast.OpAnd,
 		Left:      exp,
-		Right:     trueCondExp,
+		Right:     c.convStrExpToExpStatement(<-c.trueCondition),
 	}
 
-	if c.random(0, 2) == 1 {
-		newConditions.Left, newConditions.Right = newConditions.Right, newConditions.Left
+	if random(0, 2) == 1 {
+		newConditions = &ast.ExpStatement{
+			Operation: ast.OpAnd,
+			Left:      c.convStrExpToExpStatement(<-c.trueCondition),
+			Right:     exp,
+		}
 	}
 
 	return c.helperAppendConditions(newConditions, depth-1)
 }
 
+func (c *Obfuscator) expLess100() *ast.ExpStatement {
+	// fname := c.appendRandFunc()
+
+	return &ast.ExpStatement{
+		Operation: 0,
+		Left: &ast.ExpStatement{
+			Operation: 3,
+			Left: &ast.ExpStatement{
+				Operation: 2,
+				Left: &ast.ExpStatement{
+					Operation: 0,
+					Left: &ast.ExpStatement{
+						Operation: 2,
+						Left:      2.000000,
+						Right:     float64(random(0, 14)),
+					},
+					Right: &ast.ExpStatement{
+						Operation: 2,
+						Left:      3.000000,
+						Right:     float64(random(0, 14)),
+					},
+				},
+				Right: float64(random(0, 14)),
+			},
+			Right: 5.000000,
+		},
+		Right: 7.000000,
+	}
+}
+
 func (c *Obfuscator) newTernary(trueValue interface{}, depth, trueStep int) ast.TernaryStatement {
+
 	if depth < trueStep {
 		depth, trueStep = trueStep, depth
 	}
 
-	var expression ast.Statement
-	var value interface{}
+	expression := c.convStrExpToExpStatement(<-c.falseCondition)
+	value := c.fakeValue(trueValue)
 
 	if trueStep == 0 {
-		exp, err := c.convStrExpToExpStatement(<-c.trueCondition)
-		if err != nil {
-			// ИСПРАВЛЕНИЕ: Используем нативный bool вместо ast.NewBool
-			expression = true
-		} else {
-			expression = exp
-		}
+		expression = c.convStrExpToExpStatement(<-c.trueCondition)
 		value = trueValue
-	} else {
-		exp, err := c.convStrExpToExpStatement(<-c.falseCondition)
-		if err != nil {
-			// ИСПРАВЛЕНИЕ: Используем нативный bool вместо ast.NewBool
-			expression = false
-		} else {
-			expression = exp
-		}
-		value = c.fakeValue(trueValue)
 	}
 
 	if depth == 0 {
@@ -389,18 +413,13 @@ func (c *Obfuscator) newTernary(trueValue interface{}, depth, trueStep int) ast.
 func (c *Obfuscator) fakeValue(value interface{}) interface{} {
 	switch value.(type) {
 	case float64:
-		return float64(c.random(0, 1000))
+		return float64(random(0, 1000))
 	case int:
-		return float64(c.random(0, 1000))
+		return float64(random(0, 1000))
 	case string:
 		return c.randomString(10)
 	case *ast.ExpStatement:
-		exp, err := c.convStrExpToExpStatement(<-c.falseCondition)
-		if err != nil {
-			// ИСПРАВЛЕНИЕ: Используем нативную строку вместо ast.NewString
-			return "error"
-		}
-		return exp
+		return c.convStrExpToExpStatement(<-c.falseCondition)
 	case ast.MethodStatement:
 		return c.fakeMethods()
 	default:
@@ -409,44 +428,62 @@ func (c *Obfuscator) fakeValue(value interface{}) interface{} {
 }
 
 func (c *Obfuscator) fakeMethods() ast.MethodStatement {
+	// массив платформенных методов (важно что б они были доступны на клиенте и на сервере)
 	pool := []ast.MethodStatement{
-		{Name: "XMLСтрока", Param: []ast.Statement{float64(c.random(0, 1000))}},
-		{Name: "Лев", Param: []ast.Statement{c.randomString(20), float64(c.random(1, 10))}},
-		{Name: "Прав", Param: []ast.Statement{c.randomString(20), float64(c.random(1, 10))}},
-		{Name: "Сред", Param: []ast.Statement{c.randomString(20), float64(c.random(1, 10)), float64(c.random(0, 10))}},
-		{Name: "ПобитовыйСдвигВлево", Param: []ast.Statement{float64(c.random(0, 1000)), float64(c.random(1, 10))}},
-		{Name: "ПобитовыйСдвигВправо", Param: []ast.Statement{float64(c.random(0, 1000)), float64(c.random(1, 10))}},
-		{Name: "ПобитовоеИ", Param: []ast.Statement{float64(c.random(0, 1000)), float64(c.random(1, 10))}},
+		{
+			Name:  "XMLСтрока",
+			Param: []ast.Statement{float64(random(0, 1000))},
+		},
+		{
+			Name:  "Лев",
+			Param: []ast.Statement{c.randomString(20), float64(random(1, 10))},
+		},
+		{
+			Name:  "Прав",
+			Param: []ast.Statement{c.randomString(20), float64(random(1, 10))},
+		},
+		{
+			Name:  "Сред",
+			Param: []ast.Statement{c.randomString(20), float64(random(1, 10)), float64(random(0, 10))},
+		},
+		{
+			Name:  "ПобитовыйСдвигВлево",
+			Param: []ast.Statement{float64(random(0, 1000)), float64(random(1, 10))},
+		},
+		{
+			Name:  "ПобитовыйСдвигВправо",
+			Param: []ast.Statement{float64(random(0, 1000)), float64(random(1, 10))},
+		},
+		{
+			Name:  "ПобитовоеИ",
+			Param: []ast.Statement{float64(random(0, 1000)), float64(random(1, 10))},
+		},
 	}
-	return pool[c.random(0, int64(len(pool)))]
+
+	return pool[random(0, len(pool))]
 }
 
-func (c *Obfuscator) randomString(lenStr int) string {
-
-	charset := []rune("абвгдежзийклмнопрстуфхцчшщъыьэюяАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ")
-
-	// Проверка, чтобы избежать паники, если charset пуст
-	if len(charset) == 0 {
-		// Возвращаем пустую строку или строку-заглушку, чтобы избежать паники
-		return ""
-	}
-
+func (c *Obfuscator) randomString(lenStr int) (result string) {
+	charset := []rune("abcdefghijklmnopqrstuvwxyzйцукенгшщзхъфывапролджэячсмитьбю")
 	builder := strings.Builder{}
-	builder.Grow(lenStr)
-	for i := 0; i < lenStr; i++ {
-		builder.WriteRune(charset[c.r.Intn(len(charset))])
+
+	for builder.Len() < lenStr {
+		builder.WriteString(string(charset[random(0, len(charset))]))
 	}
+
 	return builder.String()
 }
 
 func (c *Obfuscator) obfuscateString(str string, key int32) string {
 	var decrypted []rune
-	for _, char := range str {
-		decrypted = append(decrypted, char^key)
+	for _, c := range strings.ReplaceAll(str, "|", " ") {
+		decrypted = append(decrypted, c^key)
 	}
 
 	b := []byte(string(decrypted))
-	return base64.StdEncoding.EncodeToString(b)
+	dst := make([]byte, base64.StdEncoding.EncodedLen(len(b)))
+	base64.StdEncoding.Encode(dst, b)
+	return string(dst)
 }
 
 func (c *Obfuscator) newDecodeStringFunc(directive string) string {
@@ -588,64 +625,58 @@ func (c *Obfuscator) newDecodeStringFunc(directive string) string {
 }
 
 func (c *Obfuscator) genCondition() {
-	expression := func(op string) (string, bool, error) {
-		left := c.randomMathExp(int(c.random(2, 5)))
-		right := c.randomMathExp(int(c.random(2, 5)))
-		fullExp := left + op + right
+	expresion := func(op string) (string, bool) {
+		left := c.randomMathExp(int(random(2, 7)))
+		right := c.randomMathExp(int(random(2, 7)))
 
-		evaluableExpression, err := govaluate.NewEvaluableExpression(fullExp)
+		expression, err := govaluate.NewEvaluableExpression(left + op + right)
 		if err != nil {
-			return "", false, err
+			fmt.Println(errors.Wrap(err, "genCondition error"))
+			return "", false
 		}
 
-		result, err := evaluableExpression.Evaluate(nil)
-		if err != nil {
-			return "", false, err
+		result, _ := expression.Evaluate(nil)
+		if v, ok := result.(bool); v && ok {
+			return left + op + right, true
+		} else if ok && !v {
+			return left + op + right, false
 		}
 
-		if v, ok := result.(bool); ok {
-			return fullExp, v, nil
-		}
-
-		return "", false, errors.New("expression did not evaluate to a boolean")
+		return "", false
 	}
 
+	// true
 	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				return
-			}
-		}()
+		defer close(c.trueCondition)
+
 		for {
 			select {
 			case <-c.ctx.Done():
 				return
 			default:
-				if exp, ok, err := expression(">"); err == nil && ok {
+				if exp, ok := expresion(">"); ok {
 					c.trueCondition <- exp
 				}
-				if exp, ok, err := expression("<"); err == nil && !ok {
+				if exp, ok := expresion("<"); ok {
 					c.trueCondition <- exp
 				}
 			}
 		}
 	}()
 
+	// false
 	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				return
-			}
-		}()
+		defer close(c.falseCondition)
+
 		for {
 			select {
 			case <-c.ctx.Done():
 				return
 			default:
-				if exp, ok, err := expression(">"); err == nil && !ok {
+				if exp, ok := expresion(">"); !ok && exp != "" {
 					c.falseCondition <- exp
 				}
-				if exp, ok, err := expression("<"); err == nil && ok {
+				if exp, ok := expresion("<"); !ok && exp != "" {
 					c.falseCondition <- exp
 				}
 			}
@@ -653,59 +684,48 @@ func (c *Obfuscator) genCondition() {
 	}()
 }
 
-func (c *Obfuscator) randomMathExp(lenExp int) string {
-	if lenExp <= 0 {
-		return strconv.Itoa(int(c.random(1, 1000)))
-	}
+func (c *Obfuscator) randomMathExp(lenExp int) (result string) {
 	builder := strings.Builder{}
-	operations := []string{"-", "+", "*"}
+	defer func() { result = builder.String() }()
+
+	operations := []string{"-", "+", "/", "*"}
 
 	for i := 0; i < lenExp; i++ {
-		builder.WriteString(strconv.Itoa(int(c.random(1, 1000))))
+		builder.WriteString(strconv.Itoa(int(random(1, 1000))))
 		if i < lenExp-1 {
-			builder.WriteString(operations[c.random(0, int64(len(operations)))])
+			builder.WriteString(operations[random(0, len(operations))])
 		}
 	}
-	return builder.String()
+
+	return
 }
 
-func (c *Obfuscator) convStrExpToExpStatement(str string) (*ast.ExpStatement, error) {
-	tempCode := fmt.Sprintf(`Процедура Временная() Если %s Тогда КонецЕсли; КонецПроцедуры`, str)
-	astObj := ast.NewAST(tempCode)
+func (c *Obfuscator) convStrExpToExpStatement(str string) *ast.ExpStatement {
+	astObj := ast.NewAST(fmt.Sprintf(`Процедура dsds() %s КонецПроцедуры`, str))
 	if err := astObj.Parse(); err != nil {
-		return nil, errors.Wrap(err, "ast parse error in convStrExpToExpStatement")
+		fmt.Println(errors.Wrap(err, "ast parse error"))
+		return new(ast.ExpStatement)
 	}
 
-	if len(astObj.ModuleStatement.Body) > 0 {
-		if proc, ok := astObj.ModuleStatement.Body[0].(*ast.FunctionOrProcedure); ok && len(proc.Body) > 0 {
-			if ifStmt, ok := proc.Body[0].(*ast.IfStatement); ok {
-				if exp, ok := ifStmt.Expression.(*ast.ExpStatement); ok {
-					return exp, nil
-				}
-			}
-		}
-	}
-
-	return nil, errors.New("could not extract expression from parsed temp code")
+	return astObj.ModuleStatement.Body[0].(*ast.FunctionOrProcedure).Body[0].(*ast.ExpStatement)
 }
 
 func (c *Obfuscator) loopToGoto(loop *ast.LoopStatement) []ast.Statement {
-	startLabel := c.randomString(5)
-	endLabel := c.randomString(5)
-	start := &ast.GoToLabelStatement{Name: startLabel}
-	end := &ast.GoToLabelStatement{Name: endLabel}
+	start := &ast.GoToLabelStatement{Name: c.randomString(5)}
+	end := &ast.GoToLabelStatement{Name: c.randomString(5)}
 
+	// цикл Пока
 	if loop.WhileExpr != nil {
-		invertedExp := c.invertExp(loop.WhileExpr)
 		newBody := []ast.Statement{
 			start,
 			&ast.IfStatement{
-				Expression: invertedExp,
+				Expression: c.invertExp(loop.WhileExpr),
 				TrueBlock:  []ast.Statement{ast.GoToStatement{Label: end}},
 			},
 		}
 
-		ast.StatementWalk(loop.Body, func(_ *ast.FunctionOrProcedure, statement *ast.Statement) {
+		// меняем прервать и продолжить
+		ast.StatementWalk(loop.Body, func(current *ast.FunctionOrProcedure, statement *ast.Statement) {
 			switch (*statement).(type) {
 			case ast.ContinueStatement:
 				*statement = ast.GoToStatement{Label: start}
@@ -714,11 +734,11 @@ func (c *Obfuscator) loopToGoto(loop *ast.LoopStatement) []ast.Statement {
 			}
 		})
 
-		newBody = append(newBody, loop.Body...)
-		newBody = append(newBody, ast.GoToStatement{Label: start}, end)
+		newBody = append(append(newBody, loop.Body...), ast.GoToStatement{Label: start}, end)
 		return newBody
 	}
 
+	// цикл Для а = 0 По n Цикл
 	if loop.To != nil {
 		exp, ok := loop.For.(*ast.ExpStatement)
 		if !ok {
@@ -737,8 +757,8 @@ func (c *Obfuscator) loopToGoto(loop *ast.LoopStatement) []ast.Statement {
 				TrueBlock: []ast.Statement{ast.GoToStatement{Label: end}},
 			},
 		}
-		newBody = append(newBody, loop.Body...)
-		newBody = append(newBody,
+
+		newBody = append(append(newBody, loop.Body...),
 			&ast.ExpStatement{
 				Operation: ast.OpEq,
 				Left:      exp.Left,
@@ -772,17 +792,126 @@ func (c *Obfuscator) replaceLoopToGoto(body *[]ast.Statement, loop *ast.LoopStat
 		newStatements := c.loopToGoto(loop)
 		for i := len(*body) - 1; i >= 0; i-- {
 			if (*body)[i] == loop {
-				*body = append((*body)[:i], append(newStatements, (*body)[i+1:]...)...)
-				break
+				*body = append(append(append([]ast.Statement{}, (*body)[:i]...), newStatements...), (*body)[i+1:]...)
 			}
 		}
 	}
 }
 
-// [min, max)
-func (c *Obfuscator) random(min, max int64) int64 {
-	if min >= max {
-		return min
+func (c *Obfuscator) shuffleExpressions(body []ast.Statement) []ast.Statement {
+	// if !c.conf.ShuffleExpressions {
+	// 	return body
+	// }
+
+	orderMap := make(map[int]string, len(body))
+	expr := make(map[int]ast.Statement, len(body))
+	for i, item := range body {
+		orderMap[i] = c.randomString(10)
+		expr[i] = item
 	}
-	return min + c.r.Int63n(max-min)
+
+	orderMap[len(body)] = c.randomString(10)
+
+	newBody := make([]ast.Statement, 0, len(body))
+	start := &ast.GoToLabelStatement{Name: orderMap[0]}
+	end := &ast.GoToLabelStatement{Name: orderMap[len(body)]}
+	newBody = append(newBody, ast.GoToStatement{Label: start})
+
+	for k, v := range expr {
+		next := &ast.GoToLabelStatement{Name: orderMap[k+1]}
+		newBody = append(newBody, &ast.GoToLabelStatement{Name: orderMap[k]}, v, ast.GoToStatement{Label: next})
+	}
+
+	newBody = append(newBody, end)
+	return newBody
+}
+
+// [min, max)
+func random(min, max int) int64 {
+	max -= min
+	if max <= 0 {
+		return 0
+	}
+
+	randomNumber, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	if err != nil {
+		fmt.Println(errors.Wrap(err, "rand error"))
+		return 0
+	}
+
+	return randomNumber.Int64() + int64(min)
+}
+
+func getOpPrecedence(op ast.OperationType) int {
+	switch op {
+	case ast.OpOr:
+		return 1
+	case ast.OpAnd:
+		return 2
+	case ast.OpEq, ast.OpNe, ast.OpGt, ast.OpGe, ast.OpLt, ast.OpLe:
+		return 3
+	case ast.OpPlus, ast.OpMinus:
+		return 4
+	case ast.OpMul, ast.OpDiv, ast.OpMod:
+		return 5
+	default:
+		return 0
+	}
+}
+
+// extractSubExpressionsRecursive рекурсивно обходит узел выражения, извлекает под-выражения во временные переменные
+// и возвращает измененный узел.
+func (c *Obfuscator) extractSubExpressionsRecursive(parentOp ast.OperationType, nodePtr *interface{}, newStatements *[]ast.Statement) { // <--- ИЗМЕНЕНИЕ ТИПА ЗДЕСЬ
+	// Проверяем, что в интерфейсе содержится именно выражение
+	exp, ok := (*nodePtr).(*ast.ExpStatement)
+	if !ok {
+		return // Если это не *ast.ExpStatement (а например, string или float64), выходим
+	}
+
+	parentPrecedence := getOpPrecedence(parentOp)
+	currentPrecedence := getOpPrecedence(exp.Operation)
+
+	// Рекурсивно обрабатываем дочерние узлы.
+	// Теперь передача адреса &exp.Left и &exp.Right корректна, т.к. они имеют тип *interface{}
+	c.extractSubExpressionsRecursive(exp.Operation, &exp.Left, newStatements)
+	c.extractSubExpressionsRecursive(exp.Operation, &exp.Right, newStatements)
+
+	// Проверяем, нужно ли выносить текущий узел во временную переменную
+	if currentPrecedence > 0 && parentPrecedence > 0 && currentPrecedence < parentPrecedence {
+		tempVarName := c.randomString(10)
+		tempVarStatement := ast.VarStatement{Name: tempVarName}
+
+		// Создаем новое выражение присваивания
+		newAssignment := &ast.ExpStatement{
+			Operation: ast.OpEq,
+			Left:      tempVarStatement,
+			Right:     exp,
+		}
+
+		*newStatements = append(*newStatements, newAssignment)
+
+		// Заменяем текущий узел (через разыменование указателя на интерфейс) на ссылку на переменную
+		*nodePtr = tempVarStatement
+	}
+}
+
+// introduceTempVarsForStatement - это функция-обертка для запуска процесса.
+func (c *Obfuscator) introduceTempVarsForStatement(stmt ast.Statement) []ast.Statement {
+	exp, ok := stmt.(*ast.ExpStatement)
+	// Работаем только с присваиваниями
+	if !ok || exp.Operation != ast.OpEq {
+		return []ast.Statement{stmt}
+	}
+
+	newStatements := make([]ast.Statement, 0)
+	// Запускаем рекурсивный процесс для правой части присваивания
+	c.extractSubExpressionsRecursive(exp.Operation, &exp.Right, &newStatements)
+
+	// Если были созданы новые инструкции, добавляем измененную исходную инструкцию в конец
+	if len(newStatements) > 0 {
+		return append(newStatements, exp)
+	}
+
+	// Если ничего не изменилось, возвращаем исходную инструкцию
+	return []ast.Statement{stmt}
 }
